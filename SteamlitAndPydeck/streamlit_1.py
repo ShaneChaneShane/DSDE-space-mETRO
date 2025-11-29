@@ -38,16 +38,24 @@ def load_any(file_path):
 # Load dataset
 data       = load_any("org_with_loc_v2.csv")
 test_data  = load_any("OgData/test_data.json")
-point_alpha=100
+
 # train_data = load_any("train_data.json")
 # raw_data   = load_any("raw_processed.json")
-def time_to_color(t):
-    r = int(255 * t)
-    g = int(255 * (1 - t))
-    b = 0
-    return [r, g, b, point_alpha]  # alpha = 200
+def time_to_color(t,alpha):
+    if t < 0.5:
+        ratio = t / 0.5  
+        r = int(255 * ratio)      # 0  255
+        g = 255                   
+        b = 0
+    else:
+        ratio = (t - 0.5) / 0.5
+        r = 255
+        g = int(255 * (1 - ratio))  # 255  0
+        b = 0
 
-def PydeckMap(map_style,point_size):
+    return [r, g, b, alpha]
+
+def PydeckMap(map_style,point_size,point_alpha):
     data=test_data
     min_time = data['completion_time_hours'].min()
     max_time = data['completion_time_hours'].max()
@@ -58,7 +66,8 @@ def PydeckMap(map_style,point_size):
     # data['color'] = data['norm_time'].apply(
     #     lambda x: [int(c*255) for c in colormap(x)[:3]] + [20]
     # )
-    data['color'] = data['norm_time'].apply(time_to_color)
+    data['color'] = data['norm_time'].apply(lambda t: time_to_color(t, point_alpha))
+
 
     #layer pdk
     cluster_layer = pdk.Layer(
@@ -170,18 +179,20 @@ def PydeckMap_Heatmap(map_style):
     )
 
 def main():
+
+    st.sidebar.title("Settings")
+
     map_style = st.sidebar.selectbox('Select Base Map Style',options=['Dark', 'Light', 'Road', 'Satellite'],index=2)   
-    point_size=st.sidebar.number_input("point size",1,100,50,step=5)
-    global point_alpha
-    point_alpha = st.sidebar.slider('point alpha', 1, 255, 10)
+    point_size=st.sidebar.number_input("point size",5,100,5,step=5)
+    point_alpha = st.sidebar.slider('point alpha', 1, 255, 200)
+
 
     st.title("Space Metro Project")
 
-    # PydeckMap_CompleteTime_Hexagon(map_style)
-    PydeckMap(map_style,point_size)
+    PydeckMap(map_style, point_size, point_alpha)
 
-    st.write(data)
     st.write(test_data)
+
 
 if __name__ == '__main__':
     main()
