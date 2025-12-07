@@ -1,8 +1,12 @@
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 import pandas as pd
 import pydeck as pdk
 import json
+import joblib
+import altair as alt
+from preprocess_for_model import preprocess_for_model
 
 st.markdown("""
 <style>
@@ -32,13 +36,13 @@ body, div, span, h1, h2, h3, h4, h5, h6, p, button, label {
 }
 </style>
 """, unsafe_allow_html=True)
-
 MAP_STYLES = {
     'Dark': 'dark',
     'Light': 'light',
     'Road': 'road',
     'Satellite': 'satellite'
 }
+
 @st.cache_data
 def load_any(file_path):
     # CSV case
@@ -83,11 +87,14 @@ def get_ALL_TYPES():
 def get_all_organization():
     return DATA['organization'].unique()
 DATA  = load_any("viz9_Data.csv")
-
-
 MIN_TIME, MAX_TIME,DATA_COUNT = get_time_range(DATA)
 ALL_TYPES = get_ALL_TYPES()
 ALL_ORGS = get_all_organization()
+
+@st.cache_resource
+def load_model_package(path="fast_7day_model.joblib"):
+    package = joblib.load(path)
+    return package
 
 def Filter_data(time_range, data_amount,selected_type,selected_orgs):
     df = DATA[
@@ -102,16 +109,16 @@ def Filter_data(time_range, data_amount,selected_type,selected_orgs):
     
     return df.head(data_amount)
 
-def merge_path_data(filtered_data):
+def Merge_Path_Data(filtered_data):
     df = filtered_data.groupby("organization") .agg(
                  total_time=("completion_time_hours", "sum"),
                  count=("completion_time_hours", "count")
              ) .reset_index()
     df["average"] = df["total_time"] / df["count"]
     return df
-def plot_completion_time_graph(filtered_data):
+def Plot_Completion_Time_Graph(filtered_data):
     
-    merged_df = merge_path_data(filtered_data)
+    merged_df = Merge_Path_Data(filtered_data)
     short_labels = [
         (name[:10] + "…") if len(name) > 10 else name
         for name in merged_df["organization"]]
@@ -145,9 +152,8 @@ def plot_completion_time_graph(filtered_data):
     st.write(merged_df)
     return 
 
-def merge_ticket_type_data(filtered_data):
+def Merge_Ticket_Type_Data(filtered_data):
     df = filtered_data.copy()
-
     df = df.explode("type_array")
     df = df.groupby("type_array").agg(
         total_time=("completion_time_hours", "sum"),
@@ -155,9 +161,8 @@ def merge_ticket_type_data(filtered_data):
     ).reset_index()
     df["average"] = df["total_time"] / df["count"]
     return df
-
-def plot_organization_ticket_graph(filtered_data):
-    merged_df = merge_ticket_type_data(filtered_data)
+def Plot_Organization_Ticket_Graph(filtered_data):
+    merged_df = Merge_Ticket_Type_Data(filtered_data)
     short_labels = [
         (name[:10] + "…") if len(name) > 10 else name
         for name in merged_df["type_array"]]
@@ -176,7 +181,6 @@ def plot_organization_ticket_graph(filtered_data):
         tickvals=merged_df["type_array"],
         # tickangle=45
     )
-
     fig.update_layout(
         xaxis=dict(
             categoryorder="array",
@@ -186,14 +190,9 @@ def plot_organization_ticket_graph(filtered_data):
         bargap=0.1,
         xaxis_tickangle=45 
     )
-
-
-
-
     st.plotly_chart(fig, use_container_width=True)
     st.write(merged_df)
     return 
-
 
 def Time_to_Color(t,alpha):
     if t < 0.5:
@@ -207,7 +206,7 @@ def Time_to_Color(t,alpha):
         g = int(255 * (1 - ratio))  # 255  0 yellow
         b = 0
     return [r, g, b, alpha]
-def PydeckMap(map_style,point_size,point_alpha,filtered_data,line_weight):
+def Data_Pydeck_Map(map_style,point_size,point_alpha,filtered_data,line_weight):
     min_t = filtered_data['completion_time_hours'].min()
     max_t = filtered_data['completion_time_hours'].max()
     filtered_data['norm_time'] = (filtered_data['completion_time_hours'] - min_t) / (max_t - min_t)
@@ -278,52 +277,285 @@ def PydeckMap(map_style,point_size,point_alpha,filtered_data,line_weight):
     st.write(filtered_data)
     return
 
+
+def plot_half_circle_visualization(filtered_data):
+    df = filtered_data.explode("type_array")
+    type_stats = df.groupby("type_array").size().reset_index(name="count")
+
+    fig = go.Figure(
+        go.Pie(
+            labels=type_stats["type_array"],
+            values=type_stats["count"],
+            hole=0.6,
+            sort=False,
+            direction="clockwise"
+        )
+    )
+
+    fig.update_traces(rotation=180)
+
+    fig.update_layout(
+        title="Half Circle – Ticket Type Distribution",
+        margin=dict(l=0, r=0, t=50, b=0),
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
 def main():
-#Sidebar Section Wink Wink
-    st.sidebar.title("Settings")
-    map_style = st.sidebar.selectbox('Select Base Map Style',options=['Dark', 'Light', 'Road', 'Satellite'],index=2)   
-    data_amount = st.sidebar.slider("Number of data points",0,min(80000,DATA_COUNT),value=20000,step=1000)
-    selected_type = st.sidebar.multiselect("Types", options=ALL_TYPES, default=ALL_TYPES)
-    selected_orgs = st.sidebar.multiselect("Select Organizations",options=ALL_ORGS,default=ALL_ORGS)
-    st.sidebar.subheader('Completion Time Range(hours)')
-    col1, col2 = st.sidebar.columns(2)
-    st.sidebar.subheader('Decoration')
-    point_size=st.sidebar.number_input("point size",5,100,50,step=5)
-    point_alpha = st.sidebar.slider('point alpha', 1, 255, 50)
-    line_weight = st.sidebar.slider("Line Thickness",1,50,value=2,step=1)
-
-
-    min_input = col1.number_input(
-        "Min Hours",min_value=float(MIN_TIME),max_value=float(MAX_TIME),
-        value=float(MIN_TIME),step=10.0,)
-    max_input = col2.number_input(
-        "Max Hours",min_value=float(MIN_TIME),max_value=float(MAX_TIME),
-        value=200.0,step=10.0,)
-    time_range = (min_input, max_input)
-    
-
-#Data Process
-    filtered_data = Filter_data(time_range, data_amount,selected_type,selected_orgs)
-
-
 #Main Section
     st.title("Space Metro Project")
-    tab_viz, tab_analysis = st.tabs(["Visualization", "Model Analysis"])
+    st.sidebar.title("Settings")
+    with st.sidebar.expander("Data Insight Settings", expanded=False):
+            map_style = st.selectbox('Select Base Map Style',options=['Dark', 'Light', 'Road', 'Satellite'],index=2)   
+            data_amount = st.slider("Number of data points",0,min(80000,DATA_COUNT),value=20000,step=1000)
+            selected_type = st.multiselect("Types", options=ALL_TYPES, default=ALL_TYPES)
+            selected_orgs = st.multiselect("Select Organizations",options=ALL_ORGS,default=ALL_ORGS)
+            st.subheader('Completion Time Range(hours)')
+            col1, col2 = st.columns(2)
+            st.subheader('Decoration')
+            point_size=st.number_input("point size",5,100,50,step=5)
+            point_alpha = st.slider('point alpha', 1, 255, 50)
+            line_weight = st.slider("Line Thickness",1,50,value=2,step=1)
+            min_input = col1.number_input(
+                "Min Hours",min_value=float(MIN_TIME),max_value=float(MAX_TIME),
+                value=float(MIN_TIME),step=10.0,)
+            max_input = col2.number_input(
+                "Max Hours",min_value=float(MIN_TIME),max_value=float(MAX_TIME),
+                value=200.0,step=10.0,)
+            time_range = (min_input, max_input)
+
+    with st.sidebar.expander("Training Result Settings", expanded=False):
+        uploaded_file = st.file_uploader("Upload a cleaned CSV file", type=["csv"])
+
+
+    tab_viz,tab_training= st.tabs(["Data Insight","Training Result"])
     with tab_viz:
+        filtered_data = Filter_data(time_range, data_amount,selected_type,selected_orgs)
         st.header("Visualization Section")
         st.subheader("Map View")
-        PydeckMap(map_style, point_size, point_alpha,filtered_data,line_weight)
+        Data_Pydeck_Map(map_style, point_size, point_alpha,filtered_data,line_weight)
         st.subheader("Average Completion Time per Organization")
-        plot_completion_time_graph(filtered_data)
+        Plot_Completion_Time_Graph(filtered_data)
         st.subheader("Average Completion Time per Type of Problem")
-        plot_organization_ticket_graph(filtered_data)
+        Plot_Organization_Ticket_Graph(filtered_data)
+    with tab_training:
+        ## result from model training -overall accuracy
+        #presition,recall,f1score
+        #top predict feature what is the best organization for solve the citizen problem#
+        #anothere thing i should plott
+        from sklearn.metrics import (
+            accuracy_score,
+            precision_recall_fscore_support,
+            classification_report,
+            confusion_matrix,
+            roc_auc_score,
+        )
 
-# Model section
-    with tab_analysis:
+        st.title("Ticket Completion ≤7 Days Predictor")
 
-        st.header("Model Section")
-        st.subheader("Merged Data Summary")
-        return
+        st.write(
+            """
+        This app uses your trained HistGradientBoosting model
+        to predict whether a ticket will be completed within 7 days.
+
+        """
+        )
+
+        st.set_page_config(page_title="The Ramsey Highlights", layout="wide")
+        try:
+            package = load_model_package()
+            model = package["model"]
+        except Exception as e:
+            st.error(f"Could not load model package: {e}")
+            st.stop()
+
+        st.success("Model package loaded successfully.")
+
+
+        if uploaded_file is None:
+            st.info("Please upload a cleaned CSV file to run predictions.")
+            st.stop()
+
+        # Cache reading the CSV for speed
+        @st.cache_data
+        def load_data(file):
+            return pd.read_csv(file)
+
+        df_raw = load_data(uploaded_file)
+
+        with st.spinner("Preprocessing data..."):
+            try:
+                X = preprocess_for_model(df_raw, package)
+            except Exception as e:
+                st.error(f"Error during preprocessing: {e}")
+                st.stop()
+
+        st.write("Feature matrix shape after preprocessing:", X.shape)
+
+        # Run predictions
+
+        with st.spinner("Running model predictions..."):
+            proba = model.predict_proba(X)[:, 1]
+            pred  = (proba >= 0.5).astype(int)
+
+        # Attach predictions to original data
+        results = df_raw.copy()
+        results["prob_fast_7d"] = proba
+        results["pred_fast_7d"] = pred  # 1 = will finish within 7 days
+
+        cols_to_show = []
+        # Show some helpful columns if they exist
+        for col in ["ticket_id","timestamp", "latitude", "longitude", "organization", "type"]:
+            if col in results.columns:
+                cols_to_show.append(col)
+
+        cols_to_show += ["prob_fast_7d", "pred_fast_7d"]
+
+        def highlight_fast(row):
+            if row["pred_fast_7d"] == 1:
+                return ["background-color: #fff3b0"] * len(row)   # soft yellow
+            else:
+                return [""] * len(row)
+
+        styled_preview = results[cols_to_show].head(20).style.apply(highlight_fast, axis=1)
+
+        st.subheader("Predictions (first 20 rows)")
+        st.dataframe(styled_preview)
+
+
+        # If ground truth is available, compute evaluation metrics
+
+        if "completion_time_hours" in results.columns:
+            hours_7 = 7 * 24
+
+            st.subheader("Evaluation on this dataset")
+            # Predictions vs truths (first 20 rows)
+            st.markdown("### Predictions vs Truth (first 20 rows)")
+
+            n_show = min(20, len(results))
+            first20 = results.head(n_show).copy()
+            first20["true_fast_7d"] = (first20["completion_time_hours"] <= hours_7).astype(int)
+            first20["correct"] = (first20["true_fast_7d"] == first20["pred_fast_7d"])
+
+            display_cols = []
+            if "ticket_id" in first20.columns:
+                display_cols.append("ticket_id")
+            display_cols += ["timestamp", "latitude", "longitude", "organization", "type", "completion_time_hours", "true_fast_7d", "pred_fast_7d", "prob_fast_7d", "correct"]
+
+            # Color-code correct vs incorrect predictions
+            def highlight_correct(val):
+                if val is True:
+                    return "background-color: #c6f5c6"  # light green
+                elif val is False:
+                    return "background-color: #f5c6c6"  # light red
+                return ""
+
+            styled_first20 = first20[display_cols].style.applymap(
+                highlight_correct, subset=["correct"]
+            )
+
+            st.dataframe(styled_first20)
+            
+            # === Scatter: True vs Predicted ===
+            scatter_df = first20.copy()
+            scatter_df["id"] = scatter_df.index
+
+            scatter_chart = (
+                alt.Chart(scatter_df)
+                .mark_circle(size=80)
+                .encode(
+                    x=alt.X("id:O", title="Row Index"),
+                    y=alt.Y("true_fast_7d:O", title="True (0 or 1)"),
+                    color=alt.Color("pred_fast_7d:N", title="Predicted"),
+                    tooltip=["true_fast_7d", "pred_fast_7d"]
+                )
+            )
+
+            st.markdown("### Truth vs Prediction Scatter")
+            st.altair_chart(scatter_chart, use_container_width=True)
+
+            y_true = (results["completion_time_hours"] <= hours_7).astype(int)
+            y_pred = results["pred_fast_7d"]
+            y_proba = results["prob_fast_7d"]
+
+            acc = accuracy_score(y_true, y_pred)
+            prec, rec, f1, _ = precision_recall_fscore_support(
+                y_true, y_pred, average="binary", pos_label=1
+            )
+            try:
+                roc_auc = roc_auc_score(y_true, y_proba)
+            except Exception:
+                roc_auc = float("nan")
+
+
+
+
+            metrics_df = pd.DataFrame(
+                {
+                    "Metric": [
+                        "Accuracy",
+                        "Precision (fast≤7d)",
+                        "Recall (fast≤7d)",
+                        "F1 (fast≤7d)",
+                        "ROC-AUC",
+                    ],
+                    "Value": [acc, prec, rec, f1, roc_auc],
+                }
+            ).set_index("Metric")
+
+            st.markdown("### Overall metrics")
+            st.table(metrics_df.style.format("{:.4f}"))
+            # === Table for Precision / Recall / F1 for class 0 and 1 ===
+            precisions, recalls, f1s, _ = precision_recall_fscore_support(
+                y_true, y_pred, labels=[0, 1], zero_division=0
+            )
+
+            metric_table_df = pd.DataFrame({
+                "Metric": ["Precision", "Recall", "F1"],
+                "Class 0 (>7 days)": [precisions[0], recalls[0], f1s[0]],
+                "Class 1 (≤7 days)": [precisions[1], recalls[1], f1s[1]]
+            })
+
+            st.markdown("### Precision / Recall / F1 by Class")
+            
+            numeric_cols = metric_table_df.columns[1:]   # skip "Metric"
+            st.table(metric_table_df.style.format({col: "{:.4f}" for col in numeric_cols}))
+
+            st.markdown("### Detailed classification report")
+
+            st.text(
+                classification_report(
+                    y_true, y_pred, target_names=[">7 days", "≤7 days"], zero_division=0
+                )
+            )
+
+            st.markdown("### Confusion matrix (rows=true, cols=pred)")
+
+            cm = confusion_matrix(y_true, y_pred)
+            cm_df = pd.DataFrame(
+                cm,
+                index=[">7 days", "≤7 days"],
+                columns=[">7 days", "≤7 days"],
+            )
+            st.table(cm_df)
+
+        else:
+            st.info(
+                "Column 'completion_time_hours' not found. "
+                "Showing predictions only (no evaluation metrics)."
+            )
+
+        st.subheader("Download predictions")
+
+        csv_bytes = results[cols_to_show].to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download results as CSV",
+            data=csv_bytes,
+            file_name="ticket_predictions.csv",
+            mime="text/csv",)
+
 
 if __name__ == '__main__':
     main()
